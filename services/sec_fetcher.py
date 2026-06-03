@@ -6,6 +6,10 @@ SEC_USER_AGENT = "NovaBridge Finance research-tool@novabridge.example.com"
 MAX_FILING_SIZE_BYTES = 50 * 1024 * 1024
 SECTION_CHAR_LIMIT = 40_000
 
+# Minimum characters after a section header to be considered real content
+# (not a TOC entry like "Item 1A. Risk Factors .......... 15")
+MIN_SECTION_LENGTH = 200
+
 SECTION_PATTERNS = {
     "Item 1A": [
         r"Item\s+1A[\.\s]*Risk\s+Factors",
@@ -21,7 +25,6 @@ SECTION_PATTERNS = {
     ],
 }
 
-# Fallback order — try these in sequence if the primary section is missing
 FALLBACK_ORDER = ["Item 1A", "Item 1", "Item 7"]
 
 
@@ -52,37 +55,58 @@ def fetch_filing(url: str) -> str:
     return response.text
 
 
+def _extract_candidate(clean: str, match) -> Optional[str]:
+    """
+    Given a regex match for a section header, extract the text until the
+    next major Item heading. Returns None if the extracted text is too short
+    (indicates a TOC entry, not real content).
+    """
+    remaining = clean[match.end():]
+    end_match = re.search(r"Item\s+\d+[A-Z]?[\.\s]", remaining, re.IGNORECASE)
+    section_text = remaining[: end_match.start()] if end_match else remaining
+    section_text = section_text.strip()
+
+    if len(section_text) < MIN_SECTION_LENGTH:
+        return None  # TOC entry — skip
+
+    if len(section_text) > SECTION_CHAR_LIMIT:
+        section_text = section_text[:SECTION_CHAR_LIMIT] + "\n\n[... truncated for length ...]"
+
+    return section_text
+
+
 def extract_section(text: str, section_key: str = "Item 1A") -> tuple[str, str]:
     """
-    Try to extract the requested section. If not found, fall back through
-    FALLBACK_ORDER. If nothing matches, return the full cleaned text.
+    Extract the requested section from a SEC filing.
+
+    Strategy:
+    1. Find ALL matches of the section header pattern (not just the first).
+    2. For each match, check if the text following it is substantial (> MIN_SECTION_LENGTH).
+       TOC entries are short (just a page number); real content is long.
+    3. Prefer the first match with substantial content.
+    4. Fall back through FALLBACK_ORDER if nothing found.
+    5. Last resort: return the full cleaned document.
     """
     clean = _clean_text(text)
-
-    # Try the requested section first, then fallbacks
     keys_to_try = [section_key] + [k for k in FALLBACK_ORDER if k != section_key]
 
     for key in keys_to_try:
         patterns = SECTION_PATTERNS.get(key, [])
         for pattern in patterns:
-            m = re.search(pattern, clean, re.IGNORECASE)
-            if m:
-                header_found = m.group(0).strip()
-                remaining = clean[m.end():]
-                end_match = re.search(r"Item\s+\d+[A-Z]?[\.\s]", remaining, re.IGNORECASE)
-                section_text = remaining[: end_match.start()] if end_match else remaining
-                section_text = section_text.strip()
+            matches = list(re.finditer(pattern, clean, re.IGNORECASE))
+            if not matches:
+                continue
 
-                if len(section_text) > SECTION_CHAR_LIMIT:
-                    section_text = section_text[:SECTION_CHAR_LIMIT] + "\n\n[... truncated for length ...]"
+            # Try each match in order — first one with real content wins
+            for m in matches:
+                candidate = _extract_candidate(clean, m)
+                if candidate is not None:
+                    return m.group(0).strip(), candidate
 
-                return header_found, section_text
-
-    # Last resort: return the full document text
+    # Last resort: return full document
     full_text = clean[:SECTION_CHAR_LIMIT]
     if len(clean) > SECTION_CHAR_LIMIT:
         full_text += "\n\n[... truncated for length ...]"
-
     return "Full Document (no standard sections found)", full_text
 
 
@@ -97,7 +121,6 @@ def extract_metadata(text: str) -> dict:
     if m:
         metadata["filing_type"] = m.group(1).strip()
 
-    # Fallback: HTML title
     if not metadata["company_name"]:
         m = re.search(r"<title[^>]*>([^<]+)</title>", text, re.IGNORECASE)
         if m:
@@ -107,10 +130,18 @@ def extract_metadata(text: str) -> dict:
 
 
 def _clean_text(text: str) -> str:
+    # Remove style and script blocks entirely
+    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.DOTALL | re.IGNORECASE)
+    # Strip remaining HTML tags
     text = re.sub(r"<[^>]+>", " ", text)
+    # Decode common HTML entities
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"&amp;", "&", text)
+    text = re.sub(r"&lt;", "<", text)
+    text = re.sub(r"&gt;", ">", text)
     text = re.sub(r"&#\d+;", " ", text)
+    # Normalize whitespace
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r" {2,}", " ", text)
     return text.strip()
