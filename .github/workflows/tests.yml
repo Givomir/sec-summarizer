@@ -1,4 +1,4 @@
-name: Tests
+name: Tests and Deploy
 
 on:
   push:
@@ -23,3 +23,22 @@ jobs:
 
       - name: Run tests
         run: pytest -v
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to Hugging Face Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git config user.email "github-actions@github.com"
+          git config user.name "GitHub Actions"
+          git push https://Givomir:$HF_TOKEN@huggingface.co/spaces/Givomir/sec-summarizer main --force
