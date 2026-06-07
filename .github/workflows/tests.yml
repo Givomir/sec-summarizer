@@ -43,11 +43,12 @@ jobs:
           cp main.py hf_space/
           cp database.py hf_space/
           cp repository.py hf_space/
-          cp -r services hf_space/
+          cp services/sec_fetcher.py hf_space/services/sec_fetcher.py
+          cp services/processor.py hf_space/services/processor.py
           cp -r tests hf_space/
           cp -r frontend hf_space/
-          # NOTE: requirements.txt is NOT copied — HF Space has its own
-          # version with transformers and torch which are needed for BART
+          # NOTE: requirements.txt NOT copied — HF Space needs transformers/torch
+          # NOTE: services/llm_service.py NOT copied — HF Space uses BART, not Ollama
 
       - name: Commit and push to HF Space
         env:
